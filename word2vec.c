@@ -29,9 +29,9 @@ const int vocab_hash_size = 30000000;  // Maximum 30 * 0.7 = 21M words in the vo
 typedef float real;                    // Precision of float numbers
 
 struct vocab_word {
-  long long cn;
-  int *point;
-  char *word, *code, codelen;
+  long long cn;   //词频
+  int *point;   //huffman编码对应内节点的路径
+  char *word, *code, codelen;//huffman编码
 };
 
 char train_file[MAX_STRING], output_file[MAX_STRING];
@@ -369,6 +369,7 @@ void *TrainModelThread(void *id) {
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
   FILE *fi = fopen(train_file, "rb");
+  //每个线程对应一段文本。根据线程id找到自己负责的文本的初始位置
   fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
   while (1) {
     if (word_count - last_word_count > 10000) {
@@ -386,24 +387,26 @@ void *TrainModelThread(void *id) {
     }
     if (sentence_length == 0) {
       while (1) {
-        word = ReadWordIndex(fi);
+        word = ReadWordIndex(fi);  //从文件流中读取一个词，并返回这个词在词汇表中的位置
         if (feof(fi)) break;
         if (word == -1) continue;
         word_count++;
         if (word == 0) break;
         // The subsampling randomly discards frequent words while keeping the ranking same
-        if (sample > 0) {
+        if (sample > 0) //对高频词进行下采样，不过要保持排序不变。
+        {
           real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
           next_random = next_random * (unsigned long long)25214903917 + 11;
           if (ran < (next_random & 0xFFFF) / (real)65536) continue;
         }
         sen[sentence_length] = word;
         sentence_length++;
+        //最多1000个单词视作一个句子？
         if (sentence_length >= MAX_SENTENCE_LENGTH) break;
       }
       sentence_position = 0;
     }
-    if (feof(fi) || (word_count > train_words / num_threads)) {
+    if (feof(fi) || (word_count > train_words / num_threads)) {//如果当前线程已处理的单词超过了 阈值，则退出。
       word_count_actual += word_count - last_word_count;
       local_iter--;
       if (local_iter == 0) break;
@@ -480,7 +483,9 @@ void *TrainModelThread(void *id) {
         }
       }
     } else {  //train skip-gram
-      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+      for (a = b; a < window * 2 + 1 - b; a++) 
+      //扫描周围几个词语    
+      if (a != window) {
         c = sentence_position - window + a;
         if (c < 0) continue;
         if (c >= sentence_length) continue;
@@ -489,7 +494,7 @@ void *TrainModelThread(void *id) {
         l1 = last_word * layer1_size;
         for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
         // HIERARCHICAL SOFTMAX
-        if (hs) for (d = 0; d < vocab[word].codelen; d++) {
+        if (hs) for (d = 0; d < vocab[word].codelen; d++) {  //遍历叶子节点
           f = 0;
           l2 = vocab[word].point[d] * layer1_size;
           // Propagate hidden -> output
@@ -526,7 +531,7 @@ void *TrainModelThread(void *id) {
           for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * syn0[c + l1];
         }
         // Learn weights input -> hidden
-        for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];
+        for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];  //更新周围几个词语的向量
       }
     }
     sentence_position++;
@@ -547,8 +552,10 @@ void TrainModel() {
   pthread_t *pt = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
   printf("Starting training using file %s\n", train_file);
   starting_alpha = alpha;
-  if (read_vocab_file[0] != 0) ReadVocab(); else LearnVocabFromTrainFile();
-  if (save_vocab_file[0] != 0) SaveVocab();
+  
+  if (read_vocab_file[0] != 0) ReadVocab();  //从文件读入词汇
+  else LearnVocabFromTrainFile();      //从训练文件学习词汇
+  if (save_vocab_file[0] != 0) SaveVocab();  //保存词汇
   if (output_file[0] == 0) return;
   InitNet();
   if (negative > 0) InitUnigramTable();
@@ -556,7 +563,7 @@ void TrainModel() {
   for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainModelThread, (void *)a);
   for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
   fo = fopen(output_file, "wb");
-  if (classes == 0) {
+  if (classes == 0) { //从文件读入词汇
     // Save the word vectors
     fprintf(fo, "%lld %lld\n", vocab_size, layer1_size);
     for (a = 0; a < vocab_size; a++) {
